@@ -1,14 +1,15 @@
 # A2A - Agent-to-Agent Communication System
 
-A comprehensive AWS-based system for agent discovery, registration, and communication.
+A comprehensive AWS-based system for agent discovery, registration, and communication with AI-powered intelligent routing.
 
 ## Overview
 
 This system enables autonomous agents to:
 - Register themselves with a central registry
 - Discover other agents based on capabilities and requirements
+- Use AI-powered intelligent agent selection for optimal task distribution
 - Communicate asynchronously through a reliable messaging system
-- Execute tasks collaboratively
+- Execute tasks collaboratively with confidence scoring
 
 ## Architecture
 
@@ -16,15 +17,111 @@ The system consists of several key components:
 
 ### Core Components
 - **Agent Registry**: DynamoDB-based registry for agent metadata and capabilities
-- **Discovery API**: RESTful API for agent discovery and registration
+- **Discovery API**: RESTful API with AI-powered agent discovery using AWS Bedrock
 - **Message Queue**: SQS-based messaging system for agent communication
-- **Task Management**: System for task distribution and execution
+- **Task Management**: System for task distribution and execution with confidence scoring
 
 ### Infrastructure
 - **API Gateway**: REST API endpoints for discovery and registration
 - **Lambda Functions**: Serverless compute for API handling and processing
 - **DynamoDB**: NoSQL database for agent registry and discovery requests
 - **SQS**: Message queues for agent communication and discovery requests
+- **AWS Bedrock**: AI-powered agent selection and task analysis
+
+## AI-Powered Agent Discovery
+
+### Intelligent Multi-Agent Selection
+The system uses AWS Bedrock to intelligently select multiple agents for task execution:
+
+```python
+# AI-powered discovery request
+POST /agents/discover
+{
+    "task_description": "Analyze customer feedback and generate insights",
+    "max_agents": 3,
+    "required_capabilities": ["TEXT_PROCESSING", "DATA_ANALYSIS"],
+    "priority": "high"
+}
+
+# Response with confidence scores and AI recommendations
+{
+    "success": true,
+    "selected_agents": [
+        {
+            "agent_id": "agent-1",
+            "name": "TextProcessor",
+            "selection_metadata": {
+                "role": "primary",
+                "confidence_score": 0.95,
+                "reasoning": "Perfect match for text processing tasks",
+                "assigned_capabilities": ["TEXT_PROCESSING"]
+            }
+        },
+        {
+            "agent_id": "agent-2", 
+            "name": "DataAnalyst",
+            "selection_metadata": {
+                "role": "secondary",
+                "confidence_score": 0.88,
+                "reasoning": "Strong analytical capabilities",
+                "assigned_capabilities": ["DATA_ANALYSIS"]
+            }
+        }
+    ],
+    "ai_recommendation": {
+        "distribution_strategy": "parallel",
+        "overall_confidence": 0.92,
+        "subtask_distribution": {
+            "subtasks": [
+                {
+                    "subtask_id": "text_analysis",
+                    "assigned_agent_id": "agent-1",
+                    "description": "Process and analyze text"
+                },
+                {
+                    "subtask_id": "insights_generation",
+                    "assigned_agent_id": "agent-2",
+                    "description": "Generate insights from processed data"
+                }
+            ]
+        }
+    }
+}
+```
+
+### Confidence Scoring
+Each agent selection includes a confidence score (0.0-1.0) based on:
+- **Capability Match**: How well agent capabilities match task requirements
+- **Success Rate**: Agent's historical performance
+- **Response Time**: How quickly the agent typically responds
+- **Current Load**: Agent's current workload
+- **Geographic Location**: Proximity to data/requirements
+- **Specialization**: How specialized the agent is for the task type
+
+### API Endpoints
+
+#### Traditional Discovery
+```bash
+GET /agents?capabilities=text_processing&location=us-east-1&limit=5
+```
+
+#### AI-Powered Discovery
+```bash
+POST /agents/discover
+{
+    "task_description": "Process customer feedback and generate sentiment analysis",
+    "max_agents": 3
+}
+```
+
+#### AI Recommendations
+```bash
+POST /agents/recommendations
+{
+    "task_description": "Analyze sales data and create visualizations",
+    "max_recommendations": 5
+}
+```
 
 ## Agent Lifecycle and Communication
 
@@ -118,6 +215,7 @@ result = registry.discover_agents([
 - AWS CLI installed and configured
 - Node.js 18+ and Python 3.9+
 - CDK CLI installed globally
+- AWS Bedrock access (for AI-powered features)
 
 ### Deployment
 ```bash
@@ -138,6 +236,9 @@ python agents/discovery_agent.py
 
 # Test the discovery system
 python discovery/test_discovery.py
+
+# Test AI-powered discovery
+python tests/test_bedrock_discovery.py
 ```
 
 ## Project Structure
@@ -146,9 +247,10 @@ python discovery/test_discovery.py
 A2A/
 ├── agents/                 # Agent implementations
 │   ├── base_agent.py      # Base agent class with common functionality
+│   ├── bedrock_enhanced_agent.py  # AI-enhanced agent with Bedrock integration
 │   └── discovery_agent.py  # Discovery agent example
 ├── discovery/              # Discovery system components
-│   ├── discovery_api.py    # Discovery API Lambda handler
+│   ├── discovery_api.py    # Discovery API Lambda handler with Bedrock integration
 │   ├── discovery_processor.py  # Discovery processing logic
 │   ├── agent_registration.py   # Agent registration handler
 │   └── test_discovery.py   # Test scripts
@@ -166,22 +268,11 @@ A2A/
 │   └── registry.py        # Registry operations
 └── tests/                 # Comprehensive test suite
     ├── test_discovery.py  # Discovery system tests
+    ├── test_bedrock_discovery.py  # AI-powered discovery tests
     ├── test_protocol.py   # Protocol tests
     ├── test_registry.py   # Registry tests
     └── test_base_agent.py # Base agent tests
 ```
-
-## API Endpoints
-
-### Discovery API
-- `GET /agents` - Discover agents with optional capability filters
-- `POST /agents` - Register a new agent
-- `GET /agents/{agent_id}` - Get specific agent details
-- `DELETE /agents/{agent_id}` - Deregister an agent
-
-### Agent Communication
-- `POST /agents/message` - Send message to agent
-- `GET /agents/message/{agent_id}` - Get messages for agent
 
 ## Configuration
 
@@ -190,6 +281,7 @@ Environment variables:
 - `DISCOVERY_TABLE`: DynamoDB table for agent registry
 - `DISCOVERY_QUEUE`: SQS queue for discovery requests
 - `AGENT_QUEUE`: SQS queue for agent messages
+- `BEDROCK_MODEL`: Bedrock model ID (default: anthropic.claude-3-sonnet-20240229-v1:0)
 
 ## Development
 
@@ -231,8 +323,27 @@ await agent.initialize()
 await agent.start()  # Runs message processing loop
 ```
 
+### Using AI-Enhanced Agents
+```python
+# Create AI-enhanced agent
+agent = BedrockEnhancedBaseAgent(
+    name="SmartProcessor",
+    description="AI-enhanced task processor",
+    capabilities=[Capability(type=CapabilityType.TEXT_PROCESSING)]
+)
+
+# Process task with AI guidance
+result = await agent.process_task_with_ai(
+    "Analyze sentiment in customer reviews",
+    {"reviews": ["Great product!", "Terrible service"]}
+)
+
+# Get AI insights
+insights = await agent.get_ai_insights()
+```
+
 ### Customizing Discovery Logic
-1. Modify `discovery_processor.py` for custom matching algorithms
+1. Modify `discovery_api.py` for custom AI prompts
 2. Update capability types in `protocol/a2a_protocol.py`
 3. Add new message types as needed
 
@@ -242,6 +353,8 @@ Agents automatically track:
 - Success rate
 - Average response time
 - Message processing metrics
+- AI enhancement usage
+- Confidence score trends
 
 ## Testing
 
@@ -252,6 +365,7 @@ python -m pytest
 
 # Run specific test categories
 python -m pytest tests/test_discovery.py
+python -m pytest tests/test_bedrock_discovery.py
 python -m pytest tests/test_protocol.py
 python -m pytest tests/test_registry.py
 
@@ -260,12 +374,14 @@ python -m pytest --cov=.
 ```
 
 **Test Coverage:**
-- Discovery API functionality
+- Discovery API functionality (traditional and AI-powered)
 - Agent registration and deregistration
 - Message handling and routing
 - Task execution and response
 - Protocol validation
 - Registry operations
+- AI-powered agent selection
+- Confidence scoring
 - Integration scenarios
 
 ## System Benefits
@@ -274,16 +390,25 @@ python -m pytest --cov=.
 - **Serverless**: Lambda functions scale automatically
 - **Queue-based**: SQS handles message buffering and retry
 - **NoSQL**: DynamoDB scales with data volume
+- **AI-powered**: Intelligent routing reduces manual configuration
 
 ### Reliability
 - **Message Persistence**: SQS ensures no message loss
 - **Heartbeat Monitoring**: Automatic failure detection
 - **Error Handling**: Comprehensive error recovery
+- **Confidence Scoring**: Quality assurance for agent selection
 
 ### Flexibility
 - **Capability-based**: Agents can handle multiple task types
 - **Protocol-driven**: Standardized communication format
 - **Extensible**: Easy to add new agent types and capabilities
+- **AI-enhanced**: Adaptive selection based on performance
+
+### Intelligence
+- **Multi-agent Selection**: Optimal agent combinations for complex tasks
+- **Confidence Scoring**: Quality metrics for agent selection
+- **Performance Optimization**: AI-driven performance insights
+- **Task Distribution**: Intelligent subtask assignment
 
 ## Contributing
 

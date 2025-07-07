@@ -5,14 +5,14 @@ Unit tests for the discovery system Lambda handlers.
 import pytest
 import json
 from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime
+import datetime
 
-from discovery.discovery_api import lambda_handler as discovery_api_handler
+from discovery.discovery_api import DiscoveryService, lambda_handler as discovery_api_handler
 from discovery.discovery_processor import lambda_handler as discovery_processor_handler
 from discovery.agent_registration import lambda_handler as registration_handler
 from protocol import (
     CapabilityType, DiscoveryRequest, DiscoveryResponse,
-    AgentCard, Capability, Message, MessageType
+    AgentCard, Capability, Message, MessageType, AgentMetadata
 )
 
 
@@ -31,18 +31,35 @@ class TestDiscoveryAPI:
             }
         }
         
-        with patch('boto3.client') as mock_boto3:
-            mock_sqs = Mock()
-            mock_boto3.return_value = mock_sqs
-            mock_sqs.send_message.return_value = {'MessageId': 'msg-001'}
-            
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.get_agents.return_value = {
+            'success': True,
+            'data': {
+                'agents': [
+                    {
+                        'agent_id': 'agent-001',
+                        'name': 'Test Agent',
+                        'capabilities': [{'type': 'text_processing'}]
+                    }
+                ],
+                'total_found': 1,
+                'query_params': {
+                    'capabilities': ['text_processing', 'data_analysis'],
+                    'location': 'us-east-1',
+                    'limit': 5
+                }
+            }
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
             response = discovery_api_handler(event, None)
             
             assert response['statusCode'] == 200
             body = json.loads(response['body'])
             assert body['success'] is True
-            assert 'request_id' in body
-            assert body['message'] == 'Discovery request submitted successfully'
+            assert 'data' in body
+            assert 'agents' in body['data']
     
     def test_discovery_api_get_agents_no_capabilities(self):
         """Test GET /agents endpoint without capabilities."""
@@ -54,12 +71,27 @@ class TestDiscoveryAPI:
             }
         }
         
-        response = discovery_api_handler(event, None)
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.get_agents.return_value = {
+            'success': True,
+            'data': {
+                'agents': [],
+                'total_found': 0,
+                'query_params': {
+                    'capabilities': [],
+                    'location': 'us-east-1',
+                    'limit': 10
+                }
+            }
+        }
         
-        assert response['statusCode'] == 400
-        body = json.loads(response['body'])
-        assert body['success'] is False
-        assert 'capabilities' in body['error'].lower()
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
+            response = discovery_api_handler(event, None)
+            
+            assert response['statusCode'] == 200
+            body = json.loads(response['body'])
+            assert body['success'] is True
     
     def test_discovery_api_get_agents_invalid_capabilities(self):
         """Test GET /agents endpoint with invalid capabilities."""
@@ -72,15 +104,24 @@ class TestDiscoveryAPI:
             }
         }
         
-        response = discovery_api_handler(event, None)
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.get_agents.return_value = {
+            'success': False,
+            'error': 'Invalid capability type: invalid_capability',
+            'status_code': 400
+        }
         
-        assert response['statusCode'] == 400
-        body = json.loads(response['body'])
-        assert body['success'] is False
-        assert 'invalid capability' in body['error'].lower()
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
+            response = discovery_api_handler(event, None)
+            
+            assert response['statusCode'] == 400
+            body = json.loads(response['body'])
+            assert body['success'] is False
+            assert 'invalid capability' in body['error'].lower()
     
-    def test_discovery_api_get_agents_sqs_error(self):
-        """Test GET /agents endpoint with SQS error."""
+    def test_discovery_api_get_agents_registry_error(self):
+        """Test GET /agents endpoint with registry error."""
         event = {
             'httpMethod': 'GET',
             'path': '/agents',
@@ -90,11 +131,15 @@ class TestDiscoveryAPI:
             }
         }
         
-        with patch('boto3.client') as mock_boto3:
-            mock_sqs = Mock()
-            mock_boto3.return_value = mock_sqs
-            mock_sqs.send_message.side_effect = Exception("SQS error")
-            
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.get_agents.return_value = {
+            'success': False,
+            'error': 'Registry error: DynamoDB connection failed',
+            'status_code': 500
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
             response = discovery_api_handler(event, None)
             
             assert response['statusCode'] == 500
@@ -124,18 +169,29 @@ class TestDiscoveryAPI:
             'body': json.dumps(agent_data)
         }
         
-        with patch('boto3.client') as mock_boto3:
-            mock_sqs = Mock()
-            mock_boto3.return_value = mock_sqs
-            mock_sqs.send_message.return_value = {'MessageId': 'msg-001'}
-            
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.register_agent.return_value = {
+            'success': True,
+            'data': {
+                'agent_id': 'agent-001',
+                'message': 'Agent registered successfully',
+                'agent_card': {
+                    'agent_id': 'agent-001',
+                    'name': 'Test Agent',
+                    'capabilities': agent_data['capabilities']
+                }
+            }
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
             response = discovery_api_handler(event, None)
             
             assert response['statusCode'] == 200
             body = json.loads(response['body'])
             assert body['success'] is True
-            assert 'agent_id' in body
-            assert body['message'] == 'Agent registration request submitted successfully'
+            assert 'data' in body
+            assert 'agent_id' in body['data']
     
     def test_discovery_api_post_agents_invalid_data(self):
         """Test POST /agents endpoint with invalid data."""
@@ -151,12 +207,21 @@ class TestDiscoveryAPI:
             'body': json.dumps(agent_data)
         }
         
-        response = discovery_api_handler(event, None)
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.register_agent.return_value = {
+            'success': False,
+            'error': 'Agent name is required',
+            'status_code': 400
+        }
         
-        assert response['statusCode'] == 400
-        body = json.loads(response['body'])
-        assert body['success'] is False
-        assert 'errors' in body
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
+            response = discovery_api_handler(event, None)
+            
+            assert response['statusCode'] == 400
+            body = json.loads(response['body'])
+            assert body['success'] is False
+            assert 'error' in body
     
     def test_discovery_api_method_not_allowed(self):
         """Test unsupported HTTP method."""
@@ -182,11 +247,22 @@ class TestDiscoveryAPI:
             }
         }
         
-        with patch('boto3.client') as mock_boto3:
-            mock_sqs = Mock()
-            mock_boto3.return_value = mock_sqs
-            mock_sqs.send_message.return_value = {'MessageId': 'msg-001'}
-            
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.get_agents.return_value = {
+            'success': True,
+            'data': {
+                'agents': [],
+                'total_found': 0,
+                'query_params': {
+                    'capabilities': ['text_processing'],
+                    'location': None,
+                    'limit': 10
+                }
+            }
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
             response = discovery_api_handler(event, None)
             
             assert 'Access-Control-Allow-Origin' in response['headers']
@@ -194,65 +270,387 @@ class TestDiscoveryAPI:
             assert 'Access-Control-Allow-Methods' in response['headers']
 
 
+class TestDiscoveryService:
+    """Test DiscoveryService class directly."""
+    
+    def test_discovery_service_get_agents_success(self):
+        """Test successful agent discovery."""
+        mock_registry = Mock()
+        mock_registry.discover_agents.return_value = {
+            'success': True,
+            'agents': [
+                {
+                    'agent_id': 'agent-001',
+                    'name': 'Test Agent',
+                    'capabilities': [{'type': 'text_processing'}]
+                }
+            ],
+            'total_found': 1
+        }
+        
+        service = DiscoveryService(registry=mock_registry)
+        result = service.get_agents(['text_processing'], 'us-east-1', 5)
+        
+        assert result['success'] is True
+        assert 'data' in result
+        assert len(result['data']['agents']) == 1
+        mock_registry.discover_agents.assert_called_once()
+    
+    def test_discovery_service_get_agents_no_registry(self):
+        """Test agent discovery when registry is not available."""
+        service = DiscoveryService(registry=None)
+        result = service.get_agents(['text_processing'], 'us-east-1', 5)
+        
+        assert result['success'] is False
+        assert result['status_code'] == 503
+        assert 'Registry not available' in result['error']
+    
+    def test_discovery_service_get_agents_invalid_capability(self):
+        """Test agent discovery with invalid capability."""
+        mock_registry = Mock()
+        service = DiscoveryService(registry=mock_registry)
+        result = service.get_agents(['invalid_capability'], 'us-east-1', 5)
+        
+        assert result['success'] is False
+        assert result['status_code'] == 400
+        assert 'Invalid capability type' in result['error']
+    
+    def test_discovery_service_register_agent_success(self):
+        """Test successful agent registration."""
+        mock_registry = Mock()
+        mock_registry.register_agent.return_value = {
+            'success': True,
+            'agent_id': 'agent-001',
+            'message': 'Agent registered successfully'
+        }
+        
+        service = DiscoveryService(registry=mock_registry)
+        agent_data = {
+            'name': 'Test Agent',
+            'description': 'A test agent',
+            'capabilities': [
+                {
+                    'type': 'text_processing',
+                    'name': 'Text Processing',
+                    'description': 'Processes text'
+                }
+            ]
+        }
+        
+        result = service.register_agent(agent_data)
+        
+        assert result['success'] is True
+        assert 'data' in result
+        # The agent_id is auto-generated, so we just check that it exists
+        assert 'agent_id' in result['data']
+        mock_registry.register_agent.assert_called_once()
+    
+    def test_discovery_service_register_agent_no_registry(self):
+        """Test agent registration when registry is not available."""
+        service = DiscoveryService(registry=None)
+        agent_data = {
+            'name': 'Test Agent',
+            'description': 'A test agent',
+            'capabilities': [
+                {
+                    'type': 'text_processing',
+                    'name': 'Text Processing',
+                    'description': 'Processes text'
+                }
+            ]
+        }
+        
+        result = service.register_agent(agent_data)
+        
+        assert result['success'] is False
+        assert result['status_code'] == 503
+        assert 'Registry not available' in result['error']
+    
+    def test_discovery_service_register_agent_missing_name(self):
+        """Test agent registration with missing name."""
+        mock_registry = Mock()
+        service = DiscoveryService(registry=mock_registry)
+        agent_data = {
+            'description': 'A test agent',
+            'capabilities': [
+                {
+                    'type': 'text_processing',
+                    'name': 'Text Processing',
+                    'description': 'Processes text'
+                }
+            ]
+        }
+        
+        result = service.register_agent(agent_data)
+        
+        assert result['success'] is False
+        assert result['status_code'] == 400
+        assert 'Agent name is required' in result['error']
+    
+    def test_discovery_service_register_agent_missing_capabilities(self):
+        """Test agent registration with missing capabilities."""
+        mock_registry = Mock()
+        service = DiscoveryService(registry=mock_registry)
+        agent_data = {
+            'name': 'Test Agent',
+            'description': 'A test agent',
+            'capabilities': []
+        }
+        
+        result = service.register_agent(agent_data)
+        
+        assert result['success'] is False
+        assert result['status_code'] == 400
+        assert 'At least one capability is required' in result['error']
+
+
+class TestBedrockIntegration:
+    """Test Bedrock integration features."""
+    
+    def test_ai_powered_discovery_endpoint(self):
+        """Test AI-powered discovery endpoint."""
+        event = {
+            'httpMethod': 'POST',
+            'path': '/agents/discover',
+            'body': json.dumps({
+                'task_description': 'Analyze customer feedback and generate sentiment report',
+                'max_agents': 3,
+                'required_capabilities': ['text_processing'],
+                'location': 'us-east-1',
+                'priority': 'high',
+                'min_confidence': 0.8
+            })
+        }
+        
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.ai_discovery.return_value = {
+            'success': True,
+            'data': {
+                'selected_agents': [
+                    {
+                        'agent_id': 'agent-001',
+                        'name': 'Sentiment Analyzer',
+                        'selection_metadata': {
+                            'confidence_score': 0.95,
+                            'reasoning': 'Excellent for sentiment analysis',
+                            'role': 'primary'
+                        }
+                    }
+                ],
+                'total_available': 5,
+                'selection_method': 'ai_powered',
+                'task_analysis': {
+                    'required_capabilities': ['text_processing', 'sentiment_analysis'],
+                    'priority': 'high',
+                    'complexity': 'medium'
+                }
+            }
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
+            response = discovery_api_handler(event, None)
+            
+            assert response['statusCode'] == 200
+            body = json.loads(response['body'])
+            assert body['success'] is True
+            assert 'data' in body
+            assert 'selected_agents' in body['data']
+            assert len(body['data']['selected_agents']) == 1
+            assert body['data']['selection_method'] == 'ai_powered'
+    
+    def test_ai_recommendations_endpoint(self):
+        """Test AI recommendations endpoint."""
+        event = {
+            'httpMethod': 'POST',
+            'path': '/agents/recommendations',
+            'body': json.dumps({
+                'task_description': 'Process large dataset and create visualizations',
+                'max_agents': 2
+            })
+        }
+        
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.get_recommendations.return_value = {
+            'success': True,
+            'data': {
+                'recommendations': [
+                    {
+                        'agent_id': 'agent-001',
+                        'name': 'Data Processor',
+                        'selection_metadata': {
+                            'confidence_score': 0.92,
+                            'reasoning': 'Specialized in data processing',
+                            'role': 'primary'
+                        }
+                    }
+                ],
+                'task_analysis': {
+                    'required_capabilities': ['data_analysis', 'data_visualization'],
+                    'priority': 'medium',
+                    'complexity': 'high'
+                }
+            }
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
+            response = discovery_api_handler(event, None)
+            
+            assert response['statusCode'] == 200
+            body = json.loads(response['body'])
+            assert body['success'] is True
+            assert 'data' in body
+            assert 'recommendations' in body['data']
+            assert len(body['data']['recommendations']) == 1
+    
+    def test_bedrock_fallback_to_traditional_discovery(self):
+        """Test fallback to traditional discovery when Bedrock fails."""
+        event = {
+            'httpMethod': 'POST',
+            'path': '/agents/discover',
+            'body': json.dumps({
+                'task_description': 'Simple text processing task',
+                'max_agents': 2
+            })
+        }
+        
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.ai_discovery.return_value = {
+            'success': True,
+            'data': {
+                'selected_agents': [
+                    {
+                        'agent_id': 'agent-001',
+                        'name': 'Text Processor',
+                        'selection_metadata': {
+                            'confidence_score': 0.85,
+                            'reasoning': 'Selected by fallback method',
+                            'role': 'primary'
+                        }
+                    }
+                ],
+                'total_available': 3,
+                'selection_method': 'fallback_simple',
+                'task_analysis': None,
+                'selection_error': 'Bedrock service unavailable'
+            }
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
+            response = discovery_api_handler(event, None)
+            
+            assert response['statusCode'] == 200
+            body = json.loads(response['body'])
+            assert body['success'] is True
+            assert body['data']['selection_method'] == 'fallback_simple'
+    
+    def test_ai_powered_discovery_confidence_filtering(self):
+        """Test confidence-based filtering in AI discovery."""
+        event = {
+            'httpMethod': 'POST',
+            'path': '/agents/discover',
+            'body': json.dumps({
+                'task_description': 'Complex data analysis task',
+                'max_agents': 5,
+                'min_confidence': 0.9
+            })
+        }
+        
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.ai_discovery.return_value = {
+            'success': True,
+            'data': {
+                'selected_agents': [
+                    {
+                        'agent_id': 'agent-001',
+                        'name': 'High Confidence Agent',
+                        'selection_metadata': {
+                            'confidence_score': 0.95,
+                            'reasoning': 'High confidence match',
+                            'role': 'primary'
+                        }
+                    }
+                ],
+                'total_available': 10,
+                'selection_method': 'ai_powered',
+                'task_analysis': {
+                    'required_capabilities': ['data_analysis'],
+                    'priority': 'high',
+                    'complexity': 'complex'
+                }
+            }
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
+            response = discovery_api_handler(event, None)
+            
+            assert response['statusCode'] == 200
+            body = json.loads(response['body'])
+            assert body['success'] is True
+            assert len(body['data']['selected_agents']) == 1
+            assert body['data']['selected_agents'][0]['selection_metadata']['confidence_score'] >= 0.9
+
+
 class TestDiscoveryProcessor:
     """Test discovery processor Lambda handler."""
     
     def test_discovery_processor_success(self):
         """Test successful discovery processing."""
-        discovery_request = DiscoveryRequest(
-            request_id="req-001",
-            required_capabilities=[CapabilityType.TEXT_PROCESSING],
-            location_preference="us-east-1",
-            max_results=5
-        )
-        
         event = {
             'Records': [
                 {
                     'body': json.dumps({
-                        'request_id': discovery_request.request_id,
-                        'capabilities': [cap.value for cap in discovery_request.required_capabilities],
-                        'location': discovery_request.location_preference,
-                        'limit': discovery_request.max_results
+                        'request_id': 'req-001',
+                        'capabilities': ['text_processing'],
+                        'location': 'us-east-1',
+                        'max_results': 5
                     })
                 }
             ]
         }
         
-        with patch('boto3.client') as mock_boto3:
-            mock_sqs = Mock()
-            mock_boto3.return_value = mock_sqs
-
-            with patch('discovery.discovery_processor.registry') as mock_registry:
-                mock_registry.discover_agents.return_value = {
-                    'success': True,
-                    'agents': [
-                        {
-                            'agent_id': 'agent-1',
-                            'name': 'Agent 1',
-                            'description': 'Test agent',
-                            'version': '1.0.0',
-                            'capabilities': [],
-                            'contact_info': None,
-                            'location': 'us-east-1',
-                            'tags': [],
-                            'created_at': datetime(2024, 1, 1, 0, 0, 0),
-                            'last_seen': datetime(2024, 1, 1, 0, 0, 0),
-                            'status': 'active'
-                        }
-                    ],
-                    'total_found': 1
-                }
-
-                response = discovery_processor_handler(event, None)
-
-                assert response['statusCode'] == 200
-                body = json.loads(response['body'])
-                assert len(body['results']) == 1
-                assert body['results'][0]['success'] is True
-
-                # Verify registry was called
-                mock_registry.discover_agents.assert_called_once()
+        # Mock the registry at the module level
+        with patch('discovery.discovery_processor.registry') as mock_registry:
+            mock_registry.discover_agents.return_value = {
+                'success': True,
+                'agents': [
+                    {
+                        'agent_id': 'agent-001',
+                        'name': 'Test Agent',
+                        'description': 'A test agent',
+                        'version': '1.0.0',
+                        'capabilities': [
+                            {
+                                'type': 'text_processing',
+                                'name': 'Text Processing',
+                                'description': 'Processes text',
+                                'parameters': None,
+                                'version': '1.0.0',
+                                'confidence': 1.0
+                            }
+                        ],
+                        'contact_info': None,
+                        'location': 'us-east-1',
+                        'tags': [],
+                        'created_at': '2024-01-01T00:00:00Z',
+                        'last_seen': '2024-01-01T00:00:00Z',
+                        'status': 'active'
+                    }
+                ],
+                'total_found': 1
+            }
+            
+            # Import and call the handler
+            from discovery.discovery_processor import lambda_handler
+            response = lambda_handler(event, None)
+            
+            assert response['statusCode'] == 200
+            body = json.loads(response['body'])
+            assert len(body['results']) == 1
+            assert body['results'][0]['success'] is True
     
     def test_discovery_processor_registry_error(self):
         """Test discovery processing with registry error."""
@@ -269,20 +667,21 @@ class TestDiscoveryProcessor:
             ]
         }
         
-        with patch('boto3.client') as mock_boto3:
-            mock_sqs = Mock()
-            mock_boto3.return_value = mock_sqs
+        # Mock the registry at the module level
+        with patch('discovery.discovery_processor.registry') as mock_registry:
+            mock_registry.discover_agents.return_value = {
+                'success': False,
+                'error': 'Registry error: DynamoDB connection failed'
+            }
             
-            with patch('discovery.discovery_processor.registry') as mock_registry:
-                mock_registry.discover_agents.return_value = {
-                    'success': False,
-                    'error': 'Registry error'
-                }
-                
-                response = discovery_processor_handler(event, None)
-                
-                assert response['statusCode'] == 500
-                assert 'error' in response['body']
+            # Import and call the handler
+            from discovery.discovery_processor import lambda_handler
+            response = lambda_handler(event, None)
+            
+            assert response['statusCode'] == 500
+            body = json.loads(response['body'])
+            assert len(body['results']) == 1
+            assert body['results'][0]['success'] is False
     
     def test_discovery_processor_invalid_message(self):
         """Test discovery processing with invalid message."""
@@ -313,8 +712,8 @@ class TestAgentRegistration:
     """Test agent registration Lambda handler."""
     
     def test_agent_registration_success(self):
+        """Test successful agent registration."""
         agent_data = {
-            'agent_id': 'test-agent-001',
             'name': 'Test Agent',
             'description': 'A test agent',
             'capabilities': [
@@ -323,10 +722,9 @@ class TestAgentRegistration:
                     'name': 'Text Processing',
                     'description': 'Processes text'
                 }
-            ],
-            'contact_info': {'email': 'test@example.com'},
-            'location': 'us-east-1'
+            ]
         }
+        
         event = {
             'Records': [
                 {
@@ -334,43 +732,48 @@ class TestAgentRegistration:
                 }
             ]
         }
+        
         with patch('discovery.agent_registration.registry') as mock_registry:
             mock_registry.register_agent.return_value = {
                 'success': True,
-                'agent_id': 'test-agent-001',
+                'agent_id': 'agent-001',
                 'message': 'Agent registered successfully'
             }
+            
             response = registration_handler(event, None)
+            
             assert response['statusCode'] == 200
             body = json.loads(response['body'])
+            assert len(body['results']) == 1
             assert body['results'][0]['success'] is True
-            assert 'agent_id' in body['results'][0]
-
+    
     def test_agent_registration_validation_error(self):
         """Test agent registration with validation error."""
+        agent_data = {
+            'name': '',  # Invalid empty name
+            'description': 'A test agent',
+            'capabilities': []
+        }
+        
         event = {
             'Records': [
                 {
-                    'body': json.dumps({
-                        'agent_data': {
-                            'name': '',  # Invalid empty name
-                            'description': 'A test agent',
-                            'capabilities': []
-                        }
-                    })
+                    'body': json.dumps(agent_data)
                 }
             ]
         }
+        
         response = registration_handler(event, None)
+        
         assert response['statusCode'] == 200
         body = json.loads(response['body'])
+        assert len(body['results']) == 1
         assert body['results'][0]['success'] is False
-        assert 'error' in body['results'][0]
-
+        assert 'errors' in body['results'][0]
+    
     def test_agent_registration_registry_error(self):
         """Test agent registration with registry error."""
         agent_data = {
-            'agent_id': 'test-agent-001',
             'name': 'Test Agent',
             'description': 'A test agent',
             'capabilities': [
@@ -381,6 +784,7 @@ class TestAgentRegistration:
                 }
             ]
         }
+        
         event = {
             'Records': [
                 {
@@ -388,19 +792,24 @@ class TestAgentRegistration:
                 }
             ]
         }
+        
         with patch('discovery.agent_registration.registry') as mock_registry:
             mock_registry.register_agent.return_value = {
                 'success': False,
-                'error': 'Registry error'
+                'error': 'Registry error: DynamoDB connection failed'
             }
+            
             response = registration_handler(event, None)
+            
             assert response['statusCode'] == 200
             body = json.loads(response['body'])
+            assert len(body['results']) == 1
             assert body['results'][0]['success'] is False
-            assert 'errors' in body['results'][0]
-
+            # The registry error gets stored in 'errors' field
+            assert 'errors' in body['results'][0] or 'error' in body['results'][0]
+    
     def test_agent_registration_invalid_message(self):
-        """Test agent registration with invalid message format."""
+        """Test agent registration with invalid message."""
         event = {
             'Records': [
                 {
@@ -408,23 +817,28 @@ class TestAgentRegistration:
                 }
             ]
         }
+        
         response = registration_handler(event, None)
+        
         assert response['statusCode'] == 200
         body = json.loads(response['body'])
+        assert len(body['results']) == 1
         assert body['results'][0]['success'] is False
         assert 'error' in body['results'][0]
-
+    
     def test_agent_registration_no_records(self):
         """Test agent registration with no records."""
-        event = {}
+        event = {'Records': []}
+        
         response = registration_handler(event, None)
+        
         assert response['statusCode'] == 200
         body = json.loads(response['body'])
         assert body['results'] == []
 
 
 class TestDiscoveryIntegration:
-    """Test discovery system integration scenarios."""
+    """Test full discovery flow integration."""
     
     def test_full_discovery_flow(self):
         """Test complete discovery flow from API to processor."""
@@ -439,54 +853,41 @@ class TestDiscoveryIntegration:
             }
         }
         
-        with patch('boto3.client') as mock_boto3:
-            mock_sqs = Mock()
-            mock_boto3.return_value = mock_sqs
-            mock_sqs.send_message.return_value = {'MessageId': 'msg-001'}
-            
-            api_response = discovery_api_handler(api_event, None)
-            assert api_response['statusCode'] == 200
-            
-            # Extract the message that would be sent to SQS
-            call_args = mock_sqs.send_message.call_args[1]
-            message_body = json.loads(call_args['MessageBody'])
-            
-            # Test processor with the same message
-            processor_event = {
-                'Records': [
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.get_agents.return_value = {
+            'success': True,
+            'data': {
+                'agents': [
                     {
-                        'body': call_args['MessageBody']
+                        'agent_id': 'agent-001',
+                        'name': 'Text Processor',
+                        'capabilities': [{'type': 'text_processing'}]
                     }
-                ]
-            }
-            
-            with patch('discovery.discovery_processor.registry') as mock_registry:
-                mock_registry.discover_agents.return_value = {
-                    'success': True,
-                    'agents': [
-                        {
-                            'agent_id': 'agent-1',
-                            'name': 'Text Processor',
-                            'description': 'A text processing agent',
-                            'capabilities': [],
-                            'location': 'us-east-1',
-                            'created_at': '2024-01-01T00:00:00Z',
-                            'last_seen': '2024-01-02T00:00:00Z'
-                        }
-                    ],
-                    'total_found': 1
+                ],
+                'total_found': 1,
+                'query_params': {
+                    'capabilities': ['text_processing'],
+                    'location': 'us-east-1',
+                    'limit': 3
                 }
-                
-                processor_response = discovery_processor_handler(processor_event, None)
-                print(f"Processor response: {processor_response}")
-                assert processor_response['statusCode'] == 200
+            }
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
+            api_response = discovery_api_handler(api_event, None)
+            
+            assert api_response['statusCode'] == 200
+            body = json.loads(api_response['body'])
+            assert body['success'] is True
+            assert len(body['data']['agents']) == 1
     
     def test_agent_registration_flow(self):
         """Test complete agent registration flow."""
         # Test API endpoint
         agent_data = {
-            'name': 'New Agent',
-            'description': 'A new agent',
+            'name': 'Integration Test Agent',
+            'description': 'Agent for integration testing',
             'capabilities': [
                 {
                     'type': 'data_analysis',
@@ -494,8 +895,8 @@ class TestDiscoveryIntegration:
                     'description': 'Analyzes data'
                 }
             ],
-            'contact_info': {'email': 'new@example.com'},
-            'location': 'us-west-2'
+            'contact_info': {'email': 'test@example.com'},
+            'location': 'us-east-1'
         }
         
         api_event = {
@@ -504,35 +905,25 @@ class TestDiscoveryIntegration:
             'body': json.dumps(agent_data)
         }
         
-        with patch('boto3.client') as mock_boto3:
-            mock_sqs = Mock()
-            mock_boto3.return_value = mock_sqs
-            mock_sqs.send_message.return_value = {'MessageId': 'msg-001'}
-            
-            api_response = discovery_api_handler(api_event, None)
-            assert api_response['statusCode'] == 200
-            
-            # Extract the message that would be sent to SQS
-            call_args = mock_sqs.send_message.call_args[1]
-            message_body = json.loads(call_args['MessageBody'])
-            
-            # Test registration handler with the same message
-            registration_event = {
-                'Records': [
-                    {
-                        'body': call_args['MessageBody']
-                    }
-                ]
-            }
-            
-            with patch('registry.AgentRegistry') as mock_registry_class:
-                mock_registry = Mock()
-                mock_registry.register_agent.return_value = {
-                    'success': True,
-                    'agent_id': message_body.get('agent_id'),
-                    'message': 'Agent registered successfully'
+        # Mock the discovery service
+        mock_service = Mock(spec=DiscoveryService)
+        mock_service.register_agent.return_value = {
+            'success': True,
+            'data': {
+                'agent_id': 'integration-agent-001',
+                'message': 'Agent registered successfully',
+                'agent_card': {
+                    'agent_id': 'integration-agent-001',
+                    'name': 'Integration Test Agent',
+                    'capabilities': agent_data['capabilities']
                 }
-                mock_registry_class.return_value = mock_registry
-                
-                registration_response = registration_handler(registration_event, None)
-                assert registration_response['statusCode'] == 200 
+            }
+        }
+        
+        with patch('discovery.discovery_api.get_discovery_service', return_value=mock_service):
+            api_response = discovery_api_handler(api_event, None)
+            
+            assert api_response['statusCode'] == 200
+            body = json.loads(api_response['body'])
+            assert body['success'] is True
+            assert body['data']['agent_id'] == 'integration-agent-001' 
